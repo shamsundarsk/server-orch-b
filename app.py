@@ -19,7 +19,7 @@ app = FastAPI()
 # ======================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # tighten later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -42,7 +42,7 @@ def get_all_servers():
 
     for s in RESOURCES["servers"]:
         try:
-            res = requests.get(s["url"], timeout=3)
+            res = requests.get(s["url"], timeout=5)
 
             if res.status_code == 200:
                 data = res.json()
@@ -52,8 +52,14 @@ def get_all_servers():
                 results.append({
                     "name": s["name"],
                     "status": "down",
-                    "error": f"status {res.status_code}"
+                    "error": f"HTTP {res.status_code}"
                 })
+
+        except requests.exceptions.Timeout:
+            results.append({
+                "name": s["name"],
+                "status": "timeout"
+            })
 
         except Exception as e:
             results.append({
@@ -79,7 +85,8 @@ def get_all_databases():
                     user=db["user"],
                     password=db["password"],
                     dbname=db["dbname"],
-                    sslmode="require"
+                    sslmode="require",
+                    connect_timeout=5
                 )
 
                 cur = conn.cursor()
@@ -88,7 +95,7 @@ def get_all_databases():
                 cur.execute("SELECT count(*) FROM pg_stat_activity;")
                 connections = cur.fetchone()[0]
 
-                # table scans
+                # heavy tables
                 cur.execute("""
                     SELECT relname, seq_scan
                     FROM pg_stat_user_tables
@@ -97,7 +104,7 @@ def get_all_databases():
                 """)
                 tables = cur.fetchall()
 
-                # active queries
+                # activity
                 cur.execute("""
                     SELECT state, count(*)
                     FROM pg_stat_activity
@@ -109,10 +116,11 @@ def get_all_databases():
                     "name": db["name"],
                     "status": "running",
                     "connections": connections,
-                    "table_activity": tables,
+                    "top_tables": tables,
                     "activity": activity
                 })
 
+                cur.close()
                 conn.close()
 
             except Exception as e:
@@ -143,12 +151,12 @@ def ask(q: str):
         databases = get_all_databases()
 
         context = f"""
-        Servers:
-        {servers}
+Servers:
+{servers}
 
-        Databases:
-        {databases}
-        """
+Databases:
+{databases}
+"""
 
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -156,13 +164,13 @@ def ask(q: str):
                 {
                     "role": "system",
                     "content": """
-You are an expert DevOps + Database AI assistant.
+You are a DevOps + Database AI assistant.
 
 Rules:
-- Answer short and clear
-- Explain WHY issues happen
-- Use server + DB data
-- Do NOT dump raw data
+- Keep answers short
+- Identify issues clearly
+- Suggest fixes
+- Do NOT dump raw JSON
 """
                 },
                 {
@@ -180,6 +188,6 @@ Rules:
 
     except Exception as e:
         return {
-            "error": "Something failed",
+            "error": "System failure",
             "details": str(e)
         }
